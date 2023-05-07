@@ -26,7 +26,6 @@
 #include "tiny_gltf.h"
 
 #include "vulkanexamplebase.h"
-//#include "VulkanglTFModel.h"
 
 #define ENABLE_VALIDATION false
 
@@ -355,7 +354,7 @@ public:
 	*/
 
 	// Draw a single node including child nodes (if present)
-	void drawNode(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout, VulkanglTFModel::Node* node)
+	void drawNode(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout, VulkanglTFModel::Node* node, bool bPushConstants)
 	{
 		if (node->mesh.primitives.size() > 0) {
 			// Pass the node's matrix via push constants
@@ -367,9 +366,10 @@ public:
 				currentParent = currentParent->parent;
 			}
 			// Pass the final matrix to the vertex shader using push constants
-			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &nodeMatrix);
+			if(bPushConstants)
+				vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &nodeMatrix);
 			for (VulkanglTFModel::Primitive& primitive : node->mesh.primitives) {
-				if (primitive.indexCount > 0) {
+				if (primitive.indexCount > 0 && textures.size() > 0) {
 					// Get the texture index for this primitive
 					VulkanglTFModel::Texture texture = textures[materials[primitive.materialIndex].baseColorTextureIndex];
 					auto normalMap = textures[materials[primitive.materialIndex].normalMapTextureIndex];
@@ -383,12 +383,12 @@ public:
 			}
 		}
 		for (auto& child : node->children) {
-			drawNode(commandBuffer, pipelineLayout, child);
+			drawNode(commandBuffer, pipelineLayout, child, bPushConstants);
 		}
 	}
 
 	// Draw the glTF scene starting at the top-level-nodes
-	void draw(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout)
+	void draw(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout, bool flag = true)
 	{
 		// All vertices and indices are stored in single buffers, so we only need to bind once
 		VkDeviceSize offsets[1] = { 0 };
@@ -396,7 +396,7 @@ public:
 		vkCmdBindIndexBuffer(commandBuffer, indices.buffer, 0, VK_INDEX_TYPE_UINT32);
 		// Render all nodes at top-level
 		for (auto& node : nodes) {
-			drawNode(commandBuffer, pipelineLayout, node);
+			drawNode(commandBuffer, pipelineLayout, node, flag);
 		}
 	}
 
@@ -513,7 +513,7 @@ public:
 		}
 	}
 
-	void loadglTFFile(std::string filename, VulkanglTFModel& model)
+	void loadglTFFile(std::string filename, VulkanglTFModel& model, bool bSkyboxFlag = false)
 	{
 		tinygltf::Model glTFInput;
 		tinygltf::TinyGLTF gltfContext;
@@ -548,6 +548,28 @@ public:
 		else {
 			vks::tools::exitFatal("Could not open the glTF file.\n\nThe file is part of the additional asset pack.\n\nRun \"download_assets.py\" in the repository root to download the latest version.", -1);
 			return;
+		}
+
+		//Add Pretransform from vulkanTFModel.cpp
+		if (bSkyboxFlag)
+		{
+			for (VulkanglTFModel::Node* node : model.nodes)
+			{	
+				if (node->mesh.primitives.size() > 0)
+				{
+					const glm::mat4 localMatrix = node->matrix;
+					for (VulkanglTFModel::Primitive primitive : node->mesh.primitives)
+					{
+						for (uint32_t i = 0; i < vertexBuffer.size(); i++)
+						{
+							VulkanglTFModel::Vertex& vertex = vertexBuffer[primitive.firstIndex + i];
+							//PreTransform
+							vertex.pos = glm::vec3(localMatrix * glm::vec4(vertex.pos, 1.0f));
+							vertex.normal = glm::normalize(glm::mat3(localMatrix) * vertex.normal);
+						}
+					}
+				}
+			}
 		}
 
 		// Create and upload vertex and index buffer
@@ -626,11 +648,8 @@ public:
 	void loadAssets()
 	{
 		loadglTFFile(getAssetPath() + "buster_drone/busterDrone.gltf", glTFModel);
-		ibltextures.skyboxCube.loadFromFile(getAssetPath() + "textures/hdr/pisa_cube.ktx", VK_FORMAT_R16G16B16A16_SFLOAT, vulkanDevice, queue);
-		//skyboxModel.loadFromFile(getAssetPath() + "models/cube.gltf", vulkanDevice, queue,
-		//	vkglTF::FileLoadingFlags::PreTransformVertices | vkglTF::FileLoadingFlags::FlipY);
-
-		
+		loadglTFFile(getAssetPath() + "models/cube.gltf", skyboxModel, true);
+		ibltextures.skyboxCube.loadFromFile(getAssetPath() + "textures/hdr/gcanyon_cube.ktx", VK_FORMAT_R16G16B16A16_SFLOAT, vulkanDevice, queue);
 	}
 
 	void setupDescriptors()
@@ -649,12 +668,18 @@ public:
 		VkDescriptorPoolCreateInfo descriptorPoolInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, maxSetCount);
 		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolInfo, nullptr, &descriptorPool));
 
-		// Descriptor set layout for passing matrices
-		VkDescriptorSetLayoutBinding setLayoutBinding = vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0);
-		VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCI = vks::initializers::descriptorSetLayoutCreateInfo(&setLayoutBinding, 1);
+		// Descriptor set layout for passing matrices ---and precompute texture add in this descriptor
+		std::vector<VkDescriptorSetLayoutBinding> setLayoutBindings = 
+		{
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 1),
+		};
+		VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCI = vks::initializers::descriptorSetLayoutCreateInfo(setLayoutBindings);
 		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCI, nullptr, &descriptorSetLayouts.matrices));
+
 		// Descriptor set layout for passing material textures
-		setLayoutBinding = vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 0);
+		VkDescriptorSetLayoutBinding setLayoutBinding = vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 0);
+		descriptorSetLayoutCI = vks::initializers::descriptorSetLayoutCreateInfo(&setLayoutBinding, 1);
 		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCI, nullptr, &descriptorSetLayouts.textures));
 		// Pipeline layout using both descriptor sets (set 0 = matrices, set 1 = material) 
 		std::array<VkDescriptorSetLayout, 4> setLayouts = { descriptorSetLayouts.matrices, 
@@ -670,8 +695,12 @@ public:
 		// Descriptor set for scene matrices
 		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &descriptorSetLayouts.matrices, 1);
 		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet));
-		VkWriteDescriptorSet writeDescriptorSet = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, &shaderData.buffer.descriptor);
-		vkUpdateDescriptorSets(device, 1, &writeDescriptorSet, 0, nullptr);
+		std::vector<VkWriteDescriptorSet> writeDescriptorSets = 
+		{
+			vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, &shaderData.buffer.descriptor),
+			vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, &ibltextures.irradianceCube.descriptor),
+		};
+		vkUpdateDescriptorSets(device, 2, writeDescriptorSets.data(), 0, nullptr);
 		// Descriptor sets for materials
 		for (auto& image : glTFModel.images) {
 			const VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &descriptorSetLayouts.textures, 1);
@@ -882,7 +911,7 @@ public:
 			VK_CHECK_RESULT(vkCreateImageView(device, &colorImageView, nullptr, &offscreen.view))
 
 			VkFramebufferCreateInfo fbufCreateInfo = vks::initializers::framebufferCreateInfo();
-			fbufCreateInfo.renderPass = renderPass;
+			fbufCreateInfo.renderPass = renderpass;
 			fbufCreateInfo.attachmentCount = 1;
 			fbufCreateInfo.pAttachments = &offscreen.view;
 			fbufCreateInfo.width = dim;
@@ -948,6 +977,21 @@ public:
 		VkPipelineDynamicStateCreateInfo dynamicState = vks::initializers::pipelineDynamicStateCreateInfo(dynamicStateEnables);
 		std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages;
 
+		const std::vector<VkVertexInputBindingDescription> vertexInputBindings = 
+		{
+			vks::initializers::vertexInputBindingDescription(0, sizeof(glm::vec3) * 2 + sizeof(glm::vec2), VK_VERTEX_INPUT_RATE_VERTEX),
+		};
+		const std::vector<VkVertexInputAttributeDescription> vertexInputAttributes = {
+			vks::initializers::vertexInputAttributeDescription(0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(VulkanglTFModel::Vertex, pos)),	// Location 0: Position
+			vks::initializers::vertexInputAttributeDescription(0, 1, VK_FORMAT_R32G32B32_SFLOAT, offsetof(VulkanglTFModel::Vertex, normal)),// Location 1: Normal
+			vks::initializers::vertexInputAttributeDescription(0, 2, VK_FORMAT_R32G32B32_SFLOAT, offsetof(VulkanglTFModel::Vertex, uv)),	// Location 2: Texture coordinates
+		};
+		VkPipelineVertexInputStateCreateInfo vertexInputStateCI = vks::initializers::pipelineVertexInputStateCreateInfo();
+		vertexInputStateCI.vertexBindingDescriptionCount = static_cast<uint32_t>(vertexInputBindings.size());
+		vertexInputStateCI.pVertexBindingDescriptions = vertexInputBindings.data();
+		vertexInputStateCI.vertexAttributeDescriptionCount = static_cast<uint32_t>(vertexInputAttributes.size());
+		vertexInputStateCI.pVertexAttributeDescriptions = vertexInputAttributes.data();
+
 		VkGraphicsPipelineCreateInfo pipelineCI = vks::initializers::pipelineCreateInfo(pipelinelayout, renderpass);
 		pipelineCI.pInputAssemblyState = &inputAssemblyState;
 		pipelineCI.pRasterizationState = &rasterizationState;
@@ -959,9 +1003,10 @@ public:
 		pipelineCI.stageCount = 2;
 		pipelineCI.pStages = shaderStages.data();
 		pipelineCI.renderPass = renderpass;
-		//pipelineCI.pVertexInputState = vkglTF::Vertex::getPipelineVertexInputState({ vkglTF::VertexComponent::Position, vkglTF::VertexComponent::Normal, vkglTF::VertexComponent::UV });
-		shaderStages[0] = loadShader(getShadersPath() + "pbribl/filtercube.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
-		shaderStages[1] = loadShader(getShadersPath() + "pbribl/irradiancecube.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
+
+		pipelineCI.pVertexInputState = &vertexInputStateCI;
+		shaderStages[0] = loadShader(getHomeworkShadersPath() + "homework1/filtercube.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
+		shaderStages[1] = loadShader(getHomeworkShadersPath() + "homework1/irradiancecube.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
 		VkPipeline pipeline;
 		VK_CHECK_RESULT(vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, &pipeline));
 
@@ -1025,7 +1070,7 @@ public:
 				
 				vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 				vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelinelayout, 0, 1, &descriptorset, 0, NULL);
-				//skyboxModel.draw(cmdBuf);
+				skyboxModel.draw(cmdBuf, pipelinelayout, false);
 				vkCmdEndRenderPass(cmdBuf);
 
 				vks::tools::setImageLayout(
@@ -1118,6 +1163,7 @@ public:
 	{
 		VulkanExampleBase::prepare();
 		loadAssets();
+		GenerateIrradianceCubemap();
 		prepareUniformBuffers();
 		setupDescriptors();
 		preparePipelines();

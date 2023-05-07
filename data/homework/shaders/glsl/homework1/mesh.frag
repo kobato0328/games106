@@ -13,6 +13,7 @@ layout (set = 0, binding = 0) uniform UBOScene
 	vec4 lightPos;
 	vec4 viewPos;
 } uboScene;
+layout (set = 0, binding = 1) uniform samplerCube samplerIrradiance;
 
 layout (location = 0) in vec3 inNormal;
 layout (location = 1) in vec3 inWorldPos;
@@ -106,5 +107,6 @@ void main()
 	// Combine with ambient
 	vec3 color = albedo * 0.02;
 	color += Lo;
-	outFragColor = vec4(color, 1.0);
+	vec3 irradiance = texture(samplerIrradiance, N).rgb;
+	outFragColor = vec4(irradiance, 1.0);
 }

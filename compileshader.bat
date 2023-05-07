@@ -1,0 +1,4 @@
+c:\VulkanSDK\1.3.243.0\Bin\glslc.exe d:\Jsgames106\data\homework\shaders\glsl\homework1\mesh.vert -o d:\Jsgames106\data\homework\shaders\glsl\homework1\mesh.vert.spv
+c:\VulkanSDK\1.3.243.0\Bin\glslc.exe d:\Jsgames106\data\homework\shaders\glsl\homework1\mesh.frag -o d:\Jsgames106\data\homework\shaders\glsl\homework1\mesh.frag.spv
+c:\VulkanSDK\1.3.243.0\Bin\glslc.exe d:\Jsgames106\data\homework\shaders\glsl\homework1\filtercube.vert -o d:\Jsgames106\data\homework\shaders\glsl\homework1\filtercube.vert.spv
+c:\VulkanSDK\1.3.243.0\Bin\glslc.exe d:\Jsgames106\data\homework\shaders\glsl\homework1\irradiancecube.frag -o d:\Jsgames106\data\homework\shaders\glsl\homework1\irradiancecube.frag.spv

@@ -8,10 +8,6 @@ layout(push_constant) uniform PushConsts {
 
 layout (location = 0) out vec3 outUVW;
 
-out gl_PerVertex {
-	vec4 gl_Position;
-};
-
 void main() 
 {
 	outUVW = inPos;

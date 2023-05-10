@@ -14,6 +14,11 @@ layout (set = 0, binding = 0) uniform UBOScene
 	vec4 viewPos;
 } uboScene;
 
+layout(std430, set = 6, binding = 0) readonly buffer nodeMatrices
+{
+	mat4 nodeMat[];
+};
+
 layout(push_constant) uniform PushConsts {
 	mat4 model;
 } primitive;
@@ -25,6 +30,8 @@ layout (location = 3) out vec3 outTangent;
 
 void main() 
 {
+	int nodeId = int(inColor.z);
+	mat4 mat = nodeMat[nodeId];
 	outNormal = inNormal;
 	outUV = inUV;
 	outTangent = inTangent;

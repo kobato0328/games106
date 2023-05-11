@@ -81,6 +81,7 @@ public:
 	struct Node {
 		Node* parent;
 		uint32_t index;
+		bool bAnimateNode = false;
 		std::vector<Node*> children;
 		Mesh mesh;
 		glm::mat4 matrix;
@@ -89,7 +90,7 @@ public:
 		glm::quat           rotation{};
 		glm::mat4 getLocalMatrix()
 		{
-			return glm::translate(glm::mat4(1.0f), translation) * glm::mat4(rotation) * glm::scale(glm::mat4(1.0f), scale) * matrix;
+			return bAnimateNode ? glm::translate(glm::mat4(1.0f), translation) * glm::mat4(rotation) * glm::scale(glm::mat4(1.0f), scale) : matrix;
 		}
 
 		~Node() {
@@ -562,6 +563,7 @@ public:
 					if (channel.path == "translation")
 					{
 						channel.node->translation = glm::mix(sampler.outputsVec4[i], sampler.outputsVec4[i + 1], ratio);
+						channel.node->bAnimateNode = true;
 					}
 					if (channel.path == "rotation")
 					{
@@ -578,10 +580,12 @@ public:
 						q2.w = sampler.outputsVec4[i + 1].w;
 
 						channel.node->rotation = glm::normalize(glm::slerp(q1, q2, ratio));
+						channel.node->bAnimateNode = true;
 					}
 					if (channel.path == "scale")
 					{
-						channel.node->translation = glm::mix(sampler.outputsVec4[i], sampler.outputsVec4[i + 1], ratio);
+						channel.node->scale = glm::mix(sampler.outputsVec4[i], sampler.outputsVec4[i + 1], ratio);
+						channel.node->bAnimateNode = true;
 					}
 				}
 			}
@@ -630,11 +634,6 @@ public:
 			while (currentParent) {
 				nodeMatrix = currentParent->matrix * nodeMatrix;
 				currentParent = currentParent->parent;
-			}
-			// Pass the final matrix to the vertex shader using push constants
-			if (bPushConstants)
-			{
-				vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &nodeMatrix);
 			}
 				
 			for (VulkanglTFModel::Primitive& primitive : node->mesh.primitives) {
@@ -686,6 +685,7 @@ class VulkanExample : public VulkanExampleBase
 {
 public:
 	bool wireframe = false;
+	bool NormalMapping = true;
 
 	VulkanglTFModel glTFModel;
 
@@ -696,6 +696,7 @@ public:
 			glm::mat4 model;
 			glm::vec4 lightPos = glm::vec4(5.0f, 5.0f, -5.0f, 1.0f);
 			glm::vec4 viewPos;
+			glm::vec4 bFlagSet = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
 		} values;
 		vks::Buffer skinSSBO;
 	} shaderData;
@@ -703,7 +704,17 @@ public:
 	struct Pipelines {
 		VkPipeline solid;
 		VkPipeline wireframe = VK_NULL_HANDLE;
+		VkPipeline toneMapping;
 	} pipelines;
+
+	struct TempRenderTargetSettings
+	{
+		VkImage image;
+		VkImageView view;
+		VkDeviceMemory memory;
+		VkFramebuffer framebuffer;
+		VkRenderPass pbrPass;
+	} pbrRenderSetting;
 
 	VkPipelineLayout pipelineLayout;
 	VkDescriptorSet descriptorSet;
@@ -741,6 +752,7 @@ public:
 		// Clean up used Vulkan resources
 		// Note : Inherited destructor cleans up resources stored in base class
 		vkDestroyPipeline(device, pipelines.solid, nullptr);
+		vkDestroyPipeline(device, pipelines.toneMapping, nullptr);
 		if (pipelines.wireframe != VK_NULL_HANDLE) {
 			vkDestroyPipeline(device, pipelines.wireframe, nullptr);
 		}
@@ -975,11 +987,7 @@ public:
 			descriptorSetLayouts.ssbo
 		};
 		VkPipelineLayoutCreateInfo pipelineLayoutCI= vks::initializers::pipelineLayoutCreateInfo(setLayouts.data(), static_cast<uint32_t>(setLayouts.size()));
-		// We will use push constants to push the local matrices of a primitive to the vertex shader
-		VkPushConstantRange pushConstantRange = vks::initializers::pushConstantRange(VK_SHADER_STAGE_VERTEX_BIT, sizeof(glm::mat4), 0);
-		// Push constant ranges are part of the pipeline layout
-		pipelineLayoutCI.pushConstantRangeCount = 1;
-		pipelineLayoutCI.pPushConstantRanges = &pushConstantRange;
+
 		VK_CHECK_RESULT(vkCreatePipelineLayout(device, &pipelineLayoutCI, nullptr, &pipelineLayout));
 
 		// Descriptor set for scene matrices
@@ -1046,7 +1054,7 @@ public:
 		vertexInputStateCI.vertexAttributeDescriptionCount = static_cast<uint32_t>(vertexInputAttributes.size());
 		vertexInputStateCI.pVertexAttributeDescriptions = vertexInputAttributes.data();
 
-		const std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages = {
+		std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages = {
 			loadShader(getHomeworkShadersPath() + "homework1/mesh.vert.spv", VK_SHADER_STAGE_VERTEX_BIT),
 			loadShader(getHomeworkShadersPath() + "homework1/mesh.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT)
 		};
@@ -1065,6 +1073,12 @@ public:
 
 		// Solid rendering pipeline
 		VK_CHECK_RESULT(vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, &pipelines.solid));
+
+		shaderStages[0] = loadShader(getHomeworkShadersPath() + "homework1/genbrdflut.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
+		shaderStages[1] = loadShader(getHomeworkShadersPath() + "homework1/tonemapping.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
+
+		//Better in subpass? hw requires tone mapping in renderpass 
+		VK_CHECK_RESULT(vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, &pipelines.toneMapping));
 
 		// Wire frame rendering pipeline
 		if (deviceFeatures.fillModeNonSolid) {
@@ -2073,6 +2087,7 @@ public:
 		shaderData.values.projection = camera.matrices.perspective;
 		shaderData.values.model = camera.matrices.view;
 		shaderData.values.viewPos = camera.viewPos;
+		shaderData.values.bFlagSet.x = NormalMapping;
 		memcpy(shaderData.buffer.mapped, &shaderData.values, sizeof(shaderData.values));
 	}
 
@@ -2096,7 +2111,8 @@ public:
 		if (camera.updated) {
 			updateUniformBuffers();
 		}
-		glTFModel.updateAnimation(frameTimer, shaderData.skinSSBO);
+		if(!paused)
+			glTFModel.updateAnimation(frameTimer, shaderData.skinSSBO);
 	}
 
 	virtual void viewChanged()
@@ -2110,6 +2126,13 @@ public:
 			if (overlay->checkBox("Wireframe", &wireframe)) {
 				buildCommandBuffers();
 			}
+			if (overlay->checkBox("NormalMapping", &NormalMapping))
+			{
+			}
+		}
+		if (overlay->header("Animation"))
+		{
+			overlay->checkBox("Pause", &paused);
 		}
 	}
 };

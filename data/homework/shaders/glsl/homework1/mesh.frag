@@ -1,6 +1,5 @@
 #version 450
 
-#define USED_NORMAL_MAPPING 1
 layout (set = 1, binding = 0) uniform sampler2D samplerColorMap;
 layout (set = 2, binding = 0) uniform sampler2D samplerNormalMap;
 //metal in chanel b, roughness in chanel g
@@ -13,6 +12,7 @@ layout (set = 0, binding = 0) uniform UBOScene
 	mat4 view;
 	vec4 lightPos;
 	vec4 viewPos;
+	vec4 bFlagSet;
 } uboScene;
 layout (set = 0, binding = 1) uniform samplerCube samplerIrradiance;
 layout (set = 0, binding = 2) uniform sampler2D samplerBRDFLUT;
@@ -106,15 +106,16 @@ void main()
 {
 	vec3 N = normalize(inNormal);
 	vec3 realN = N;
-#ifdef USED_NORMAL_MAPPING
-	vec3 T = normalize(inTangent);
-	vec3 B = cross(N, T);
-	mat3 TBN = mat3(T, B, N);
-	realN  = TBN * normalize(texture(samplerNormalMap, inUV).rgb * 2.0 - vec3(1.0));
-#endif 
+	if(uboScene.bFlagSet.x > 0.0) //Flag to Control Normal mapping
+	{
+		vec3 T = normalize(inTangent);
+		vec3 B = cross(N, T);
+		mat3 TBN = mat3(T, B, N);
+		realN  = TBN * normalize(texture(samplerNormalMap, inUV).rgb * 2.0 - vec3(1.0));
+	}
 	vec3 V = normalize(uboScene.viewPos.xyz - inWorldPos);
 	vec2 roughMetalic = texture(samplerMetalRoughMap, inUV).gb;
-	vec3 albedo = texture(samplerColorMap, inUV).rgb;
+	vec3 albedo = texture(samplerColorMap, inUV).rgb * materials.baseColorFactor.xyz;
 
 	vec3 Lo = vec3(0.0);
 
@@ -133,7 +134,7 @@ void main()
 	vec3 irradiance = texture(samplerIrradiance, N).rgb;
 
 	// Diffuse based on irradiance
-	vec3 diffuse = irradiance * albedo * materials.baseColorFactor.xyz;	
+	vec3 diffuse = irradiance * albedo;	
 	vec3 F = F_SchlickR(max(dot(N, V), 0.0), F0, roughMetalic.x);
 
 	// Specular reflectance

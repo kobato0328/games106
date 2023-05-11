@@ -12,16 +12,13 @@ layout (set = 0, binding = 0) uniform UBOScene
 	mat4 view;
 	vec4 lightPos;
 	vec4 viewPos;
+	vec4 bFlagSet;
 } uboScene;
 
 layout(std430, set = 6, binding = 0) readonly buffer nodeMatrices
 {
 	mat4 nodeMat[];
 };
-
-layout(push_constant) uniform PushConsts {
-	mat4 model;
-} primitive;
 
 layout (location = 0) out vec3 outNormal;
 layout (location = 1) out vec3 outWorldPos;
@@ -35,7 +32,7 @@ void main()
 	outNormal = inNormal;
 	outUV = inUV;
 	outTangent = inTangent;
-	outWorldPos = vec3(primitive.model * vec4(inPos, 1.0));
-	outNormal = transpose(inverse(mat3(primitive.model))) * inNormal;
-	gl_Position = uboScene.projection * uboScene.view * primitive.model * vec4(inPos.xyz, 1.0);
+	outWorldPos = vec3(mat * vec4(inPos, 1.0));
+	outNormal = transpose(inverse(mat3(mat))) * inNormal;
+	gl_Position = uboScene.projection * uboScene.view * mat * vec4(inPos.xyz, 1.0);
 }

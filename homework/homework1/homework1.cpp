@@ -707,14 +707,41 @@ public:
 		VkPipeline toneMapping;
 	} pipelines;
 
-	struct TempRenderTargetSettings
-	{
+	struct FrameBufferAttachment {
 		VkImage image;
+		VkDeviceMemory mem;
 		VkImageView view;
-		VkDeviceMemory memory;
-		VkFramebuffer framebuffer;
-		VkRenderPass pbrPass;
-	} pbrRenderSetting;
+		VkFormat format;
+		void destroy(VkDevice device)
+		{
+			vkDestroyImage(device, image, nullptr);
+			vkDestroyImageView(device, view, nullptr);
+			vkFreeMemory(device, mem, nullptr);
+		}
+	};
+
+	struct FrameBuffer
+	{
+		int32_t width, height;
+		VkFramebuffer frameBuffer;
+		VkRenderPass renderPass;
+		void setSize(int32_t w, int32_t h)
+		{
+			this->width = w;
+			this->height = h;
+		}
+		void destroy(VkDevice device)
+		{
+			vkDestroyFramebuffer(device, frameBuffer, nullptr);
+			vkDestroyRenderPass(device, renderPass, nullptr);
+		}
+	};
+	struct {
+		FrameBufferAttachment color, depth;
+		FrameBuffer fbo;
+	} pbrFrameBuffer;
+
+	VkSampler colorSampler;
 
 	VkPipelineLayout pipelineLayout;
 	VkDescriptorSet descriptorSet;
@@ -788,7 +815,7 @@ public:
 		clearValues[1].depthStencil = { 1.0f, 0 };
 
 		VkRenderPassBeginInfo renderPassBeginInfo = vks::initializers::renderPassBeginInfo();
-		renderPassBeginInfo.renderPass = renderPass;
+		renderPassBeginInfo.renderPass = pbrFrameBuffer.fbo.renderPass;
 		renderPassBeginInfo.renderArea.offset.x = 0;
 		renderPassBeginInfo.renderArea.offset.y = 0;
 		renderPassBeginInfo.renderArea.extent.width = width;
@@ -801,7 +828,7 @@ public:
 
 		for (int32_t i = 0; i < drawCmdBuffers.size(); ++i)
 		{
-			renderPassBeginInfo.framebuffer = frameBuffers[i];
+			renderPassBeginInfo.framebuffer = pbrFrameBuffer.fbo.frameBuffer;
 			VK_CHECK_RESULT(vkBeginCommandBuffer(drawCmdBuffers[i], &cmdBufInfo));
 			vkCmdBeginRenderPass(drawCmdBuffers[i], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 			vkCmdSetViewport(drawCmdBuffers[i], 0, 1, &viewport);
@@ -811,8 +838,65 @@ public:
 			vkCmdBindDescriptorSets(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 6, 1, &skinDescriptorSet, 0, nullptr);
 			vkCmdBindPipeline(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, wireframe ? pipelines.wireframe : pipelines.solid);
 			glTFModel.draw(drawCmdBuffers[i], pipelineLayout);
+
 			drawUI(drawCmdBuffers[i]);
+			
 			vkCmdEndRenderPass(drawCmdBuffers[i]);
+
+			{
+				//Test
+				vks::tools::setImageLayout(
+					drawCmdBuffers[i],
+					swapChain.images[i],
+					VK_IMAGE_ASPECT_COLOR_BIT,
+					VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+				vks::tools::setImageLayout(
+					drawCmdBuffers[i],
+					pbrFrameBuffer.color.image,
+					VK_IMAGE_ASPECT_COLOR_BIT,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+					VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+				VkImageCopy copyRegion = {};
+				copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+				copyRegion.srcSubresource.layerCount = 1;
+				copyRegion.srcSubresource.mipLevel = 0;
+				copyRegion.srcSubresource.baseArrayLayer = 0;
+
+				copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+				copyRegion.dstSubresource.layerCount = 1;
+				copyRegion.dstSubresource.mipLevel = 0;
+				copyRegion.dstSubresource.baseArrayLayer = 0;
+
+				copyRegion.extent.width = static_cast<uint32_t>(viewport.width);
+				copyRegion.extent.height = static_cast<uint32_t>(viewport.height);
+				copyRegion.extent.depth = 1;
+
+				vkCmdCopyImage(
+					drawCmdBuffers[i],
+					pbrFrameBuffer.color.image,
+					VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+					swapChain.images[i],
+					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					1,
+					&copyRegion);
+
+				vks::tools::setImageLayout(
+					drawCmdBuffers[i],
+					pbrFrameBuffer.color.image,
+					VK_IMAGE_ASPECT_COLOR_BIT,
+					VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+				vks::tools::setImageLayout(drawCmdBuffers[i],
+					swapChain.images[i],
+					VK_IMAGE_ASPECT_COLOR_BIT,
+					VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+					VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+				);
+			}
 			VK_CHECK_RESULT(vkEndCommandBuffer(drawCmdBuffers[i]));
 		}
 	}
@@ -1059,7 +1143,7 @@ public:
 			loadShader(getHomeworkShadersPath() + "homework1/mesh.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT)
 		};
 
-		VkGraphicsPipelineCreateInfo pipelineCI = vks::initializers::pipelineCreateInfo(pipelineLayout, renderPass, 0);
+		VkGraphicsPipelineCreateInfo pipelineCI = vks::initializers::pipelineCreateInfo(pipelineLayout, pbrFrameBuffer.fbo.renderPass, 0);
 		pipelineCI.pVertexInputState = &vertexInputStateCI;
 		pipelineCI.pInputAssemblyState = &inputAssemblyStateCI;
 		pipelineCI.pRasterizationState = &rasterizationStateCI;
@@ -2049,6 +2133,162 @@ public:
 		std::cout << "Generating BRDF LUT took " << tDiff << " ms" << std::endl;
 	}
 	//----------------------------End Precompute brick------------------------------------------------------------------//
+#pragma region pbr render pass setting
+
+	void createAttachment(
+		VkFormat format,
+		VkImageUsageFlagBits usage,
+		FrameBufferAttachment* attachment,
+		uint32_t width,
+		uint32_t height)
+	{
+		VkImageAspectFlags aspectMask = 0;
+		VkImageUsageFlags imageUsage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		attachment->format = format;
+		if (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
+		{
+			aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			imageUsage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+		}
+		if (usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
+		{
+			aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			if (format >= VK_FORMAT_D16_UNORM_S8_UINT)
+				aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+		}
+
+		assert(aspectMask > 0);
+
+		VkImageCreateInfo image = vks::initializers::imageCreateInfo();
+		image.imageType = VK_IMAGE_TYPE_2D;
+		image.format = format;
+		image.extent.width = width;
+		image.extent.height = height;
+		image.extent.depth = 1;
+		image.mipLevels = 1;
+		image.arrayLayers = 1;
+		image.samples = VK_SAMPLE_COUNT_1_BIT;
+		image.tiling = VK_IMAGE_TILING_OPTIMAL;
+		image.usage = imageUsage | usage;
+
+		VkMemoryAllocateInfo memAlloc = vks::initializers::memoryAllocateInfo();
+		VkMemoryRequirements memReqs;
+
+		VK_CHECK_RESULT(vkCreateImage(device, &image, nullptr, &attachment->image));
+		vkGetImageMemoryRequirements(device, attachment->image, &memReqs);
+		memAlloc.allocationSize = memReqs.size;
+		memAlloc.memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		VK_CHECK_RESULT(vkAllocateMemory(device, &memAlloc, nullptr, &attachment->mem));
+		VK_CHECK_RESULT(vkBindImageMemory(device, attachment->image, attachment->mem, 0));
+
+		VkImageViewCreateInfo imageView = vks::initializers::imageViewCreateInfo();
+		imageView.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		imageView.format = format;
+		imageView.subresourceRange = {};
+		imageView.subresourceRange.aspectMask = aspectMask;
+		imageView.subresourceRange.baseMipLevel = 0;
+		imageView.subresourceRange.levelCount = 1;
+		imageView.subresourceRange.baseArrayLayer = 0;
+		imageView.subresourceRange.layerCount = 1;
+		imageView.image = attachment->image;
+		VK_CHECK_RESULT(vkCreateImageView(device, &imageView, nullptr, &attachment->view));
+	}
+	void PreparePBRFramebuffer()
+	{
+		//Create image color attachment
+		pbrFrameBuffer.fbo.setSize(width, height);
+		VkFormat attDepthFormat;
+		VkBool32 validDepthFormat = vks::tools::getSupportedDepthFormat(physicalDevice, &attDepthFormat);
+		assert(validDepthFormat);
+
+		createAttachment(VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, &pbrFrameBuffer.color, width, height);
+		createAttachment(attDepthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, &pbrFrameBuffer.depth, width, height);
+		{
+			std::array<VkAttachmentDescription, 2> attachs = {};
+			for (uint32_t i = 0; i < static_cast<uint32_t>(attachs.size()); ++i)
+			{
+				attachs[i].samples = VK_SAMPLE_COUNT_1_BIT;
+				attachs[i].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+				attachs[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+				attachs[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+				attachs[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+				attachs[i].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+				attachs[i].finalLayout = i == 1 ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			}
+			attachs[0].format = pbrFrameBuffer.color.format;
+			attachs[1].format = pbrFrameBuffer.depth.format;
+
+			VkAttachmentReference colorReference = {};
+			colorReference.attachment = 0;
+			colorReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+			VkAttachmentReference depthReference = {};
+			depthReference.attachment = 1;
+			depthReference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+			VkSubpassDescription subpass = {};
+			subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+			subpass.pColorAttachments = &colorReference;
+			subpass.colorAttachmentCount = 1;
+			subpass.pDepthStencilAttachment = &depthReference;
+
+			std::array<VkSubpassDependency, 2> dependencies;
+			//To test src 0
+			dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+			dependencies[0].dstSubpass = 0;
+			dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			dependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+			dependencies[1].srcSubpass = 0;
+			dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+			dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+			VkRenderPassCreateInfo renderPassCI = {};
+			renderPassCI.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+			renderPassCI.pAttachments = attachs.data();
+			renderPassCI.attachmentCount = static_cast<uint32_t>(attachs.size());
+			renderPassCI.pSubpasses = &subpass;
+			renderPassCI.subpassCount = 1;
+			renderPassCI.pDependencies = dependencies.data();
+			renderPassCI.dependencyCount = 2;
+			VK_CHECK_RESULT(vkCreateRenderPass(device, &renderPassCI, nullptr, &pbrFrameBuffer.fbo.renderPass));
+
+			//Create FBO
+			VkImageView attachments[2] = { pbrFrameBuffer.color.view, pbrFrameBuffer.depth.view };
+			VkFramebufferCreateInfo fbufCreateInfo = vks::initializers::framebufferCreateInfo();
+			fbufCreateInfo.renderPass = pbrFrameBuffer.fbo.renderPass;
+			fbufCreateInfo.pAttachments = attachments;
+			fbufCreateInfo.attachmentCount = 2;
+			fbufCreateInfo.width = pbrFrameBuffer.fbo.width;
+			fbufCreateInfo.height = pbrFrameBuffer.fbo.height;
+			fbufCreateInfo.layers = 1;
+			VK_CHECK_RESULT(vkCreateFramebuffer(device, &fbufCreateInfo, nullptr, &pbrFrameBuffer.fbo.frameBuffer));
+		}
+
+		//Create Image sampler
+		VkSamplerCreateInfo samplerCI = vks::initializers::samplerCreateInfo();
+		samplerCI.magFilter = VK_FILTER_NEAREST;
+		samplerCI.minFilter = VK_FILTER_NEAREST;
+		samplerCI.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+		samplerCI.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerCI.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerCI.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		//samplerCI.mipLodBias = 0.0f;
+		//samplerCI.maxAnisotropy = 1.0f;
+		samplerCI.minLod = 0.0f;
+		samplerCI.maxLod = 1.0f;
+		samplerCI.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+		VK_CHECK_RESULT(vkCreateSampler(device, &samplerCI, nullptr, &colorSampler));
+
+	}
+#pragma endregion
 	// Prepare and initialize uniform buffer containing shader uniforms
 	void prepareUniformBuffers()
 	{
@@ -2094,6 +2334,7 @@ public:
 	void prepare()
 	{
 		VulkanExampleBase::prepare();
+		PreparePBRFramebuffer();
 		loadAssets();
 		GenerateBRDFLUT();
 		GenerateIrradianceCubemap();

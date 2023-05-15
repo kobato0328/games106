@@ -77,9 +77,9 @@ vec3 specularContribution(vec3 L, vec3 V, vec3 N, vec3 F0, float metallic, float
 {
 	// Precalculate vectors and dot products	
 	vec3 H = normalize (V + L);
-	float dotNH = clamp(dot(N, H), 0.0, 1.0);
-	float dotNV = clamp(dot(N, V), 0.0, 1.0);
-	float dotNL = clamp(dot(N, L), 0.0, 1.0);
+	float dotNH = clamp(dot(N, H), 1e-4, 1.0);
+	float dotNV = clamp(dot(N, V), 1e-4, 1.0);
+	float dotNL = clamp(dot(N, L), 1e-4, 1.0);
 
 	// Light color fixed
 	vec3 lightColor = vec3(1.0);
@@ -142,8 +142,12 @@ void main()
 
 	// Ambient part
 	vec3 kD = 1.0 - F;
-	kD *= 1.0 - roughMetalic.y;	  
-	vec3 indirectRadiance = (kD * diffuse + specular);
+	kD *= 1.0 - roughMetalic.y;
+	vec3 indirectRadiance = vec3(0.0);
+	if(uboScene.bFlagSet.y > 0.0)
+	{
+		indirectRadiance = (kD * diffuse + specular);
+	}
 
 	//Emissive color
 	vec3 emissive = texture(samplerEmissiveMap, inUV).rgb;
